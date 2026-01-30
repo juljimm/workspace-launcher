@@ -191,7 +191,17 @@ class SelectorApp(Adw.Application):
         )
         self.templates = {}
 
+    def sync_shortcuts(self):
+        """Sincroniza shortcuts .desktop con templates"""
+        subprocess.run(
+            ["python3", WORKSPACE_CMD, "--sync-shortcuts"],
+            capture_output=True
+        )
+
     def do_activate(self):
+        # Sincronizar shortcuts al iniciar
+        self.sync_shortcuts()
+
         # Load templates
         self.templates = self.load_templates()
 

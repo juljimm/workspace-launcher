@@ -13,8 +13,12 @@ import os
 import re
 from pathlib import Path
 from fractions import Fraction
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 TEMPLATES_DIR = Path.home() / ".config/workspace-launcher/templates"
+DESKTOP_DIR = Path.home() / ".local/share/applications"
+CONFIG_DIR = Path.home() / ".config/workspace-launcher"
+ICON_NAME = "workspace-launcher"
 
 # Monitor configuration (auto-detected)
 MONITORS = {}
@@ -241,106 +245,205 @@ def get_frame_extents(win_id):
 
 def position_window(win_id, x, y, w, h):
     """Posiciona una ventana compensando por frame extents (sombras GTK)."""
-    # Obtener frame extents para compensar
-    left, right, top, bottom = get_frame_extents(win_id)
+    # Obtener frame extents para compensar solo la posición
+    left, _, top, _ = get_frame_extents(win_id)
 
-    # Compensar posición (restar para mover la ventana visible al borde)
+    # Compensar posición para que el contenido visible empiece en x,y
     adj_x = x - left
     adj_y = y - top
-    # Compensar tamaño (añadir para que el contenido visible tenga el tamaño deseado)
-    adj_w = w + left + right
-    adj_h = h + top + bottom
 
-    geom = f"{adj_x},{adj_y},{adj_w},{adj_h}"
+    geom = f"{adj_x},{adj_y},{w},{h}"
     subprocess.run(["wmctrl", "-i", "-r", win_id, "-e", f"0,{geom}"], capture_output=True)
 
 
-def open_window(window_config):
-    """Open a window according to its configuration"""
+def get_all_window_ids():
+    """Obtiene TODOS los IDs de ventanas existentes en el sistema.
+
+    Returns:
+        Set de IDs de ventanas existentes
+    """
+    result = subprocess.run(
+        ["wmctrl", "-l"],
+        capture_output=True, text=True
+    )
+    ids = set()
+    for line in result.stdout.strip().split('\n'):
+        if line:
+            # Formato: 0x04600017  0 hostname Title
+            parts = line.split()
+            if parts:
+                ids.add(parts[0])
+    return ids
+
+
+def wait_for_new_window(existing_ids, timeout=5.0, poll_interval=0.1):
+    """Espera activamente hasta que aparezca CUALQUIER ventana nueva.
+
+    Args:
+        existing_ids: Set de IDs que existían antes de lanzar
+        timeout: Tiempo máximo de espera en segundos
+        poll_interval: Intervalo entre intentos en segundos
+
+    Returns:
+        ID de la ventana nueva (hex string), o None si timeout
+    """
+    start = time.time()
+
+    while time.time() - start < timeout:
+        current_ids = get_all_window_ids()
+        new_ids = current_ids - existing_ids
+
+        if new_ids:
+            # Retornar la primera ventana nueva encontrada
+            return list(new_ids)[0]
+
+        time.sleep(poll_interval)
+
+    return None
+
+
+def launch_window_async(window_config, existing_ids):
+    """Lanza una ventana sin esperar, retorna info para tracking.
+
+    Args:
+        window_config: configuración de la ventana
+        existing_ids: IDs de TODAS las ventanas antes de lanzar
+
+    Returns:
+        dict con información para posicionar la ventana después:
+        - config: configuración original
+        - existing_ids: IDs que existían antes de lanzar
+        - position: (x, y, w, h)
+    """
     wtype = window_config["type"]
     monitor = window_config.get("monitor", "primary")
     position = window_config.get("position", "full")
-    desktop = window_config.get("desktop", 1)
 
     x, y, w, h = parse_position(position, monitor)
-    geom = f"{x},{y},{w},{h}"
 
     if wtype == "kitty":
         title = window_config.get("title", "Kitty")
         cmd = window_config["command"]
+
+        # Lanzar sin esperar
         subprocess.Popen(
             ["kitty", "--title", title, "-e", "bash", "-c", f"{cmd}; exec bash"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-        time.sleep(2.0)
-        # Buscar ventana por nombre para obtener window ID
-        result = subprocess.run(
-            ["xdotool", "search", "--name", title],
-            capture_output=True, text=True
-        )
-        if result.stdout.strip():
-            win_id = result.stdout.strip().split()[-1]
-            move_to_desktop(win_id, desktop, by_id=True)
-            unmaximize_window(win_id, by_id=True)
-            time.sleep(0.1)
-            position_window(win_id, x, y, w, h)
-        else:
-            # Fallback: usar título directamente
-            move_to_desktop(title, desktop, by_id=False)
-            unmaximize_window(title, by_id=False)
-            time.sleep(0.1)
-            subprocess.run(["wmctrl", "-r", title, "-e", f"0,{geom}"], capture_output=True)
+
+        return {
+            "config": window_config,
+            "existing_ids": existing_ids,
+            "position": (x, y, w, h)
+        }
 
     elif wtype == "app":
         cmd = window_config["command"]
-        window_class = window_config.get("window_class")
 
-        # Inferir clase de ventana del comando si no está especificada
-        if not window_class:
-            cmd_name = cmd.split()[0].split("/")[-1]
-            window_class = cmd_name
-
-        # Obtener ventanas existentes de esta clase ANTES de abrir
-        existing = subprocess.run(
-            ["xdotool", "search", "--class", window_class],
-            capture_output=True, text=True
-        )
-        existing_ids = set(existing.stdout.strip().split()) if existing.stdout.strip() else set()
-
-        # Abrir la aplicación
+        # Lanzar sin esperar
         subprocess.Popen(
             cmd.split(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-        time.sleep(2.5)
 
-        # Buscar ventana nueva de esta clase
-        result = subprocess.run(
-            ["xdotool", "search", "--class", window_class],
-            capture_output=True, text=True
-        )
-        current_ids = set(result.stdout.strip().split()) if result.stdout.strip() else set()
-        new_ids = current_ids - existing_ids
+        return {
+            "config": window_config,
+            "existing_ids": existing_ids,
+            "position": (x, y, w, h)
+        }
 
-        if new_ids:
-            win_id = list(new_ids)[0]  # Tomar la primera ventana nueva
-            move_to_desktop(win_id, desktop, by_id=True)
-            unmaximize_window(win_id, by_id=True)
-            time.sleep(0.1)
-            position_window(win_id, x, y, w, h)
-        elif current_ids:
-            # Fallback: usar la ventana más reciente de esa clase
-            win_id = list(current_ids)[-1]
-            move_to_desktop(win_id, desktop, by_id=True)
-            unmaximize_window(win_id, by_id=True)
-            time.sleep(0.1)
-            position_window(win_id, x, y, w, h)
+    return None
+
+
+def position_window_when_ready(window_info, timeout=5.0):
+    """Espera a que la ventana aparezca y la posiciona.
+
+    Args:
+        window_info: dict retornado por launch_window_async
+        timeout: tiempo máximo de espera
+
+    Returns:
+        tuple (success: bool, window_title: str, win_id: str or None)
+    """
+    if window_info is None:
+        return (False, "unknown", None)
+
+    config = window_info["config"]
+    existing_ids = window_info["existing_ids"]
+    x, y, w, h = window_info["position"]
+    desktop = config.get("desktop", 1)
+    window_title = config.get("title", config.get("type", "unknown"))
+
+    # Esperar a que aparezca CUALQUIER ventana nueva
+    win_id = wait_for_new_window(existing_ids, timeout=timeout)
+
+    if win_id:
+        move_to_desktop(win_id, desktop, by_id=True)
+        unmaximize_window(win_id, by_id=True)
+        time.sleep(0.05)  # Pequeña pausa para que se aplique unmaximize
+        position_window(win_id, x, y, w, h)
+        return (True, window_title, win_id)
+    else:
+        return (False, window_title, None)
+
+
+def open_window(window_config):
+    """Open a window according to its configuration (versión secuencial legacy)"""
+    existing_ids = get_all_window_ids()
+    info = launch_window_async(window_config, existing_ids)
+    if info:
+        success, title, _ = position_window_when_ready(info, timeout=5.0)
+        return (success, title)
+    return (False, "unknown")
+
+
+def get_window_group_key(window_config):
+    """Obtiene la clave de agrupación para evitar race conditions.
+
+    Ventanas del mismo grupo se procesan secuencialmente.
+    Ventanas de grupos diferentes se procesan en paralelo.
+    """
+    wtype = window_config["type"]
+    if wtype == "kitty":
+        # Cada kitty tiene título único, pueden ir en paralelo
+        return ("kitty", window_config.get("title", "Kitty"))
+    elif wtype == "app":
+        # Agrupar por el ejecutable base (ej: "librewolf", "code")
+        cmd = window_config["command"]
+        executable = cmd.split()[0].split("/")[-1]
+        return ("app", executable)
+    return ("unknown", "unknown")
+
+
+def process_window_group(windows_in_group):
+    """Procesa un grupo de ventanas del mismo tipo secuencialmente.
+
+    Para ventanas que comparten el mismo ejecutable (ej: múltiples librewolf),
+    las procesa una por una para evitar race conditions.
+
+    Returns:
+        list of (success, window_title) tuples
+    """
+    results = []
+    for window_config in windows_in_group:
+        try:
+            # Capturar TODAS las ventanas existentes JUSTO ANTES de lanzar
+            existing_ids = get_all_window_ids()
+            info = launch_window_async(window_config, existing_ids)
+            if info:
+                success, title, _ = position_window_when_ready(info, timeout=5.0)
+                results.append((success, title))
+            else:
+                results.append((False, window_config.get("title", "unknown")))
+        except Exception as e:
+            results.append((False, f"{window_config.get('title', 'unknown')}: {e}"))
+    return results
 
 
 def load_template(name):
-    """Load and execute a YAML template"""
+    """Load and execute a YAML template with parallel window launching"""
     template_file = TEMPLATES_DIR / f"{name}.yml"
     if not template_file.exists():
         template_file = TEMPLATES_DIR / name
@@ -353,14 +456,45 @@ def load_template(name):
         config = yaml.safe_load(f)
 
     name_display = config.get("name", name)
+    windows = config.get("windows", [])
+
+    if not windows:
+        print(f"Workspace '{name_display}' has no windows defined.")
+        return True
+
     print(f"Loading workspace: {name_display}")
 
-    for window in config.get("windows", []):
-        try:
-            open_window(window)
-            print(f"  ✓ {window.get('title', window.get('type'))}")
-        except Exception as e:
-            print(f"  ✗ Error: {e}")
+    # Agrupar ventanas por ejecutable
+    # Ventanas del mismo grupo (ej: 2 librewolf) se procesan secuencialmente
+    # Grupos diferentes (kitty, librewolf, code) se procesan en paralelo
+    groups = {}
+    for window in windows:
+        key = get_window_group_key(window)
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(window)
+
+    # Procesar grupos en paralelo, ventanas dentro de cada grupo secuencialmente
+    all_results = []
+    with ThreadPoolExecutor(max_workers=len(groups)) as executor:
+        futures = {
+            executor.submit(process_window_group, group_windows): key
+            for key, group_windows in groups.items()
+        }
+
+        for future in as_completed(futures):
+            try:
+                results = future.result()
+                all_results.extend(results)
+            except Exception as e:
+                print(f"  ✗ Error processing group: {e}")
+
+    # Mostrar resultados
+    for success, title in all_results:
+        if success:
+            print(f"  ✓ {title}")
+        else:
+            print(f"  ✗ {title}")
 
     print("Workspace loaded.")
     return True
@@ -391,16 +525,218 @@ def list_templates():
                 print(f"  {f.stem} (read error)")
 
 
+# =============================================================================
+# Shortcut (.desktop) management functions
+# =============================================================================
+
+def sanitize_filename(name):
+    """Convierte un nombre en uno seguro para usar como nombre de archivo.
+
+    Args:
+        name: Nombre del template
+
+    Returns:
+        Nombre sanitizado (lowercase, sin espacios ni caracteres especiales)
+    """
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '-', name.lower())
+    sanitized = re.sub(r'-+', '-', sanitized)
+    return sanitized.strip('-')
+
+
+def get_template_metadata(template_path):
+    """Extrae metadatos de un archivo de template YAML.
+
+    Args:
+        template_path: Path al archivo .yml
+
+    Returns:
+        dict con keys: name, description, shortcut (bool)
+        Retorna None si hay error al leer
+    """
+    try:
+        with open(template_path) as f:
+            config = yaml.safe_load(f)
+            return {
+                "name": config.get("name", template_path.stem),
+                "description": config.get("description", ""),
+                "shortcut": config.get("shortcut", True)
+            }
+    except (yaml.YAMLError, IOError):
+        return None
+
+
+def generate_desktop_entry(template_name, metadata):
+    """Genera el contenido de un archivo .desktop para un template.
+
+    Args:
+        template_name: Nombre del archivo de template (sin extensión)
+        metadata: dict con name, description
+
+    Returns:
+        String con el contenido del archivo .desktop
+    """
+    display_name = metadata.get("name", template_name)
+    description = metadata.get("description", f"Workspace: {display_name}")
+
+    return f"""[Desktop Entry]
+Version=1.0
+Type=Application
+Name=WS: {display_name}
+Comment={description}
+Exec=python3 {CONFIG_DIR}/workspace.py '{template_name}'
+Icon={ICON_NAME}
+Terminal=false
+Categories=Utility;System;
+Keywords=workspace;layout;windows;{template_name};
+StartupNotify=false
+"""
+
+
+def get_desktop_filename(template_name):
+    """Genera el nombre del archivo .desktop para un template."""
+    safe_name = sanitize_filename(template_name)
+    return DESKTOP_DIR / f"workspace-launcher-{safe_name}.desktop"
+
+
+def install_template_shortcut(template_name, metadata=None):
+    """Instala un archivo .desktop para un template.
+
+    Args:
+        template_name: Nombre del archivo de template (sin extensión)
+        metadata: Metadatos del template (opcional, se lee si no se provee)
+
+    Returns:
+        True si se instaló correctamente, False en caso contrario
+    """
+    if metadata is None:
+        template_path = TEMPLATES_DIR / f"{template_name}.yml"
+        metadata = get_template_metadata(template_path)
+        if metadata is None:
+            return False
+
+    if not metadata.get("shortcut", True):
+        return False
+
+    DESKTOP_DIR.mkdir(parents=True, exist_ok=True)
+
+    desktop_content = generate_desktop_entry(template_name, metadata)
+    desktop_file = get_desktop_filename(template_name)
+
+    try:
+        with open(desktop_file, 'w') as f:
+            f.write(desktop_content)
+        return True
+    except IOError:
+        return False
+
+
+def remove_template_shortcut(template_name):
+    """Elimina el archivo .desktop de un template."""
+    desktop_file = get_desktop_filename(template_name)
+    try:
+        if desktop_file.exists():
+            desktop_file.unlink()
+        return True
+    except IOError:
+        return False
+
+
+def sync_shortcuts():
+    """Sincroniza los shortcuts .desktop con los templates existentes.
+
+    - Crea shortcuts para templates con shortcut: true (o sin campo)
+    - Elimina shortcuts de templates con shortcut: false
+    - Elimina shortcuts huérfanos (templates eliminados)
+
+    Returns:
+        dict con estadísticas: created, removed, errors
+    """
+    stats = {"created": 0, "removed": 0, "errors": 0}
+
+    if not TEMPLATES_DIR.exists():
+        return stats
+
+    current_templates = {}
+    for template_file in TEMPLATES_DIR.glob("*.yml"):
+        template_name = template_file.stem
+        metadata = get_template_metadata(template_file)
+        if metadata:
+            current_templates[template_name] = metadata
+
+    existing_shortcuts = set()
+    if DESKTOP_DIR.exists():
+        for desktop_file in DESKTOP_DIR.glob("workspace-launcher-*.desktop"):
+            name_part = desktop_file.stem.replace("workspace-launcher-", "", 1)
+            existing_shortcuts.add(name_part)
+
+    templates_with_shortcuts = set()
+    for template_name, metadata in current_templates.items():
+        safe_name = sanitize_filename(template_name)
+        should_have_shortcut = metadata.get("shortcut", True)
+
+        if should_have_shortcut:
+            templates_with_shortcuts.add(safe_name)
+            if install_template_shortcut(template_name, metadata):
+                if safe_name not in existing_shortcuts:
+                    stats["created"] += 1
+            else:
+                stats["errors"] += 1
+        else:
+            if safe_name in existing_shortcuts:
+                if remove_template_shortcut(template_name):
+                    stats["removed"] += 1
+                else:
+                    stats["errors"] += 1
+
+    orphan_shortcuts = existing_shortcuts - templates_with_shortcuts
+    for safe_name in orphan_shortcuts:
+        desktop_file = DESKTOP_DIR / f"workspace-launcher-{safe_name}.desktop"
+        try:
+            if desktop_file.exists():
+                desktop_file.unlink()
+                stats["removed"] += 1
+        except IOError:
+            stats["errors"] += 1
+
+    return stats
+
+
+def list_shortcuts():
+    """Lista los shortcuts .desktop instalados."""
+    if not DESKTOP_DIR.exists():
+        print("No hay shortcuts instalados.")
+        return
+
+    shortcuts = list(DESKTOP_DIR.glob("workspace-launcher-*.desktop"))
+    if not shortcuts:
+        print("No hay shortcuts instalados.")
+        return
+
+    print("Shortcuts instalados:\n")
+    for desktop_file in sorted(shortcuts):
+        try:
+            with open(desktop_file) as f:
+                content = f.read()
+                name_match = re.search(r'^Name=(.+)$', content, re.MULTILINE)
+                name = name_match.group(1) if name_match else desktop_file.stem
+                print(f"  {name}")
+                print(f"    {desktop_file}\n")
+        except IOError:
+            print(f"  {desktop_file.stem} (error de lectura)")
+
+
 def show_help():
     """Show help"""
     print("""
 Workspace Launcher - Open workspaces defined in YAML
 
 Usage:
-  workspace <name>       Load the specified template
-  workspace --list       List available templates
-  workspace --monitors   List detected monitors
-  workspace --help       Show this help
+  workspace <name>           Load the specified template
+  workspace --list           List available templates
+  workspace --monitors       List detected monitors
+  workspace --sync-shortcuts Sync .desktop shortcuts with templates
+  workspace --list-shortcuts List installed shortcuts
+  workspace --help           Show this help
 
 Templates in: ~/.config/workspace-launcher/templates/
 
@@ -425,6 +761,9 @@ Shortcuts: full, left, right, top, bottom,
            top-left, top-right, bottom-left, bottom-right,
            left-third, center-third, right-third,
            left-two-thirds, right-two-thirds
+
+Template options:
+  shortcut: true/false   Create/skip .desktop shortcut (default: true)
 """)
 
 
@@ -441,6 +780,23 @@ def list_monitors():
 
 def main():
     global MONITORS
+
+    # Opciones que no requieren detectar monitores
+    if len(sys.argv) >= 2:
+        if sys.argv[1] in ["--sync-shortcuts"]:
+            stats = sync_shortcuts()
+            if stats["created"] or stats["removed"]:
+                print(f"Shortcuts: {stats['created']} creados, {stats['removed']} eliminados")
+            return
+
+        if sys.argv[1] in ["--list-shortcuts"]:
+            list_shortcuts()
+            return
+
+        if sys.argv[1] in ["--help", "-h"]:
+            show_help()
+            return
+
     check_dependencies()
     MONITORS = detect_monitors()
 
@@ -454,10 +810,6 @@ def main():
 
     if sys.argv[1] in ["--monitors", "-m"]:
         list_monitors()
-        return
-
-    if sys.argv[1] in ["--help", "-h"]:
-        show_help()
         return
 
     load_template(sys.argv[1])
