@@ -245,79 +245,63 @@ def get_frame_extents(win_id):
 
 def position_window(win_id, x, y, w, h):
     """Posiciona una ventana compensando por frame extents (sombras GTK)."""
-    # Obtener frame extents para compensar solo la posición
-    left, _, top, _ = get_frame_extents(win_id)
-
-    # Compensar posición para que el contenido visible empiece en x,y
+    left, right, top, bottom = get_frame_extents(win_id)
     adj_x = x - left
     adj_y = y - top
-
-    geom = f"{adj_x},{adj_y},{w},{h}"
+    adj_w = w + left + right
+    adj_h = h + top + bottom
+    geom = f"{adj_x},{adj_y},{adj_w},{adj_h}"
     subprocess.run(["wmctrl", "-i", "-r", win_id, "-e", f"0,{geom}"], capture_output=True)
 
 
-def get_all_window_ids():
-    """Obtiene TODOS los IDs de ventanas existentes en el sistema.
-
-    Returns:
-        Set de IDs de ventanas existentes
-    """
+def get_window_ids_by_name(name):
+    """Obtiene IDs de ventanas por nombre usando xdotool."""
     result = subprocess.run(
-        ["wmctrl", "-l"],
+        ["xdotool", "search", "--name", name],
         capture_output=True, text=True
     )
-    ids = set()
-    for line in result.stdout.strip().split('\n'):
-        if line:
-            # Formato: 0x04600017  0 hostname Title
-            parts = line.split()
-            if parts:
-                ids.add(parts[0])
-    return ids
+    return set(result.stdout.strip().split()) if result.stdout.strip() else set()
 
 
-def wait_for_new_window(existing_ids, timeout=5.0, poll_interval=0.1):
-    """Espera activamente hasta que aparezca CUALQUIER ventana nueva.
+def get_window_ids_by_class(window_class):
+    """Obtiene IDs de ventanas por clase usando xdotool."""
+    result = subprocess.run(
+        ["xdotool", "search", "--class", window_class],
+        capture_output=True, text=True
+    )
+    return set(result.stdout.strip().split()) if result.stdout.strip() else set()
 
-    Args:
-        existing_ids: Set de IDs que existían antes de lanzar
-        timeout: Tiempo máximo de espera en segundos
-        poll_interval: Intervalo entre intentos en segundos
 
-    Returns:
-        ID de la ventana nueva (hex string), o None si timeout
-    """
+def wait_for_window_by_name(name, existing_ids, timeout=5.0, poll_interval=0.1):
+    """Espera hasta que aparezca una ventana nueva con el nombre dado."""
     start = time.time()
-
     while time.time() - start < timeout:
-        current_ids = get_all_window_ids()
+        current_ids = get_window_ids_by_name(name)
         new_ids = current_ids - existing_ids
-
         if new_ids:
-            # Retornar la primera ventana nueva encontrada
-            return list(new_ids)[0]
-
+            return list(new_ids)[-1]  # Última ventana (más reciente)
         time.sleep(poll_interval)
-
     return None
 
 
-def launch_window_async(window_config, existing_ids):
-    """Lanza una ventana sin esperar, retorna info para tracking.
+def wait_for_window_by_class(window_class, existing_ids, timeout=5.0, poll_interval=0.1):
+    """Espera hasta que aparezca una ventana nueva con la clase dada."""
+    start = time.time()
+    while time.time() - start < timeout:
+        current_ids = get_window_ids_by_class(window_class)
+        new_ids = current_ids - existing_ids
+        if new_ids:
+            return list(new_ids)[0]  # Primera ventana nueva
+        time.sleep(poll_interval)
+    return None
 
-    Args:
-        window_config: configuración de la ventana
-        existing_ids: IDs de TODAS las ventanas antes de lanzar
 
-    Returns:
-        dict con información para posicionar la ventana después:
-        - config: configuración original
-        - existing_ids: IDs que existían antes de lanzar
-        - position: (x, y, w, h)
-    """
+def open_window(window_config):
+    """Open a window according to its configuration"""
     wtype = window_config["type"]
     monitor = window_config.get("monitor", "primary")
     position = window_config.get("position", "full")
+    desktop = window_config.get("desktop", 1)
 
     x, y, w, h = parse_position(position, monitor)
 
@@ -325,77 +309,54 @@ def launch_window_async(window_config, existing_ids):
         title = window_config.get("title", "Kitty")
         cmd = window_config["command"]
 
-        # Lanzar sin esperar
+        # Obtener ventanas existentes ANTES de abrir
+        existing_ids = get_window_ids_by_name(title)
+
         subprocess.Popen(
             ["kitty", "--title", title, "-e", "bash", "-c", f"{cmd}; exec bash"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
 
-        return {
-            "config": window_config,
-            "existing_ids": existing_ids,
-            "position": (x, y, w, h)
-        }
+        # Esperar a que aparezca la ventana
+        win_id = wait_for_window_by_name(title, existing_ids, timeout=5.0)
+
+        if win_id:
+            move_to_desktop(win_id, desktop, by_id=True)
+            unmaximize_window(win_id, by_id=True)
+            time.sleep(0.1)
+            position_window(win_id, x, y, w, h)
+            return (True, title)
+        return (False, title)
 
     elif wtype == "app":
         cmd = window_config["command"]
+        window_class = window_config.get("window_class")
 
-        # Lanzar sin esperar
+        if not window_class:
+            cmd_name = cmd.split()[0].split("/")[-1]
+            window_class = cmd_name
+
+        # Obtener ventanas existentes ANTES de abrir
+        existing_ids = get_window_ids_by_class(window_class)
+
         subprocess.Popen(
             cmd.split(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
 
-        return {
-            "config": window_config,
-            "existing_ids": existing_ids,
-            "position": (x, y, w, h)
-        }
+        # Esperar a que aparezca la ventana
+        win_id = wait_for_window_by_class(window_class, existing_ids, timeout=5.0)
 
-    return None
+        if win_id:
+            move_to_desktop(win_id, desktop, by_id=True)
+            unmaximize_window(win_id, by_id=True)
+            time.sleep(0.1)
+            position_window(win_id, x, y, w, h)
+            return (True, window_class)
+        return (False, window_class)
 
-
-def position_window_when_ready(window_info, timeout=5.0):
-    """Espera a que la ventana aparezca y la posiciona.
-
-    Args:
-        window_info: dict retornado por launch_window_async
-        timeout: tiempo máximo de espera
-
-    Returns:
-        tuple (success: bool, window_title: str, win_id: str or None)
-    """
-    if window_info is None:
-        return (False, "unknown", None)
-
-    config = window_info["config"]
-    existing_ids = window_info["existing_ids"]
-    x, y, w, h = window_info["position"]
-    desktop = config.get("desktop", 1)
-    window_title = config.get("title", config.get("type", "unknown"))
-
-    # Esperar a que aparezca CUALQUIER ventana nueva
-    win_id = wait_for_new_window(existing_ids, timeout=timeout)
-
-    if win_id:
-        move_to_desktop(win_id, desktop, by_id=True)
-        unmaximize_window(win_id, by_id=True)
-        time.sleep(0.05)  # Pequeña pausa para que se aplique unmaximize
-        position_window(win_id, x, y, w, h)
-        return (True, window_title, win_id)
-    else:
-        return (False, window_title, None)
-
-
-def open_window(window_config):
-    """Open a window according to its configuration (versión secuencial legacy)"""
-    existing_ids = get_all_window_ids()
-    info = launch_window_async(window_config, existing_ids)
-    if info:
-        success, title, _ = position_window_when_ready(info, timeout=5.0)
-        return (success, title)
     return (False, "unknown")
 
 
@@ -410,17 +371,19 @@ def get_window_group_key(window_config):
         # Cada kitty tiene título único, pueden ir en paralelo
         return ("kitty", window_config.get("title", "Kitty"))
     elif wtype == "app":
-        # Agrupar por el ejecutable base (ej: "librewolf", "code")
-        cmd = window_config["command"]
-        executable = cmd.split()[0].split("/")[-1]
-        return ("app", executable)
+        # Agrupar por clase de ventana (ej: múltiples librewolf)
+        window_class = window_config.get("window_class")
+        if not window_class:
+            cmd = window_config["command"]
+            window_class = cmd.split()[0].split("/")[-1]
+        return ("app", window_class)
     return ("unknown", "unknown")
 
 
 def process_window_group(windows_in_group):
     """Procesa un grupo de ventanas del mismo tipo secuencialmente.
 
-    Para ventanas que comparten el mismo ejecutable (ej: múltiples librewolf),
+    Para ventanas que comparten la misma clase (ej: múltiples librewolf),
     las procesa una por una para evitar race conditions.
 
     Returns:
@@ -429,14 +392,8 @@ def process_window_group(windows_in_group):
     results = []
     for window_config in windows_in_group:
         try:
-            # Capturar TODAS las ventanas existentes JUSTO ANTES de lanzar
-            existing_ids = get_all_window_ids()
-            info = launch_window_async(window_config, existing_ids)
-            if info:
-                success, title, _ = position_window_when_ready(info, timeout=5.0)
-                results.append((success, title))
-            else:
-                results.append((False, window_config.get("title", "unknown")))
+            success, title = open_window(window_config)
+            results.append((success, title))
         except Exception as e:
             results.append((False, f"{window_config.get('title', 'unknown')}: {e}"))
     return results
