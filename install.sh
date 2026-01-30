@@ -126,7 +126,9 @@ ln -sf "$CONFIG_DIR/workspace.py" "$BIN_DIR/workspace"
 # 9. Install GNOME desktop integration
 echo "Installing GNOME desktop integration..."
 cp "$SCRIPT_DIR/workspace-launcher.sh" "$CONFIG_DIR/workspace-launcher.sh"
+cp "$SCRIPT_DIR/workspace-selector.py" "$CONFIG_DIR/workspace-selector.py"
 chmod +x "$CONFIG_DIR/workspace-launcher.sh"
+chmod +x "$CONFIG_DIR/workspace-selector.py"
 
 # Install icon following freedesktop.org spec
 ICON_NAME="workspace-launcher"
@@ -153,9 +155,9 @@ Terminal=false
 Categories=Utility;System;
 DESKTOP
 
-# Check zenity
-if ! command -v zenity >/dev/null; then
-    echo "Nota: Instala zenity para selector GUI: sudo apt install zenity"
+# Check GTK4/libadwaita for native GUI selector
+if ! python3 -c "import gi; gi.require_version('Adw', '1')" 2>/dev/null; then
+    echo "Nota: Instala libadwaita para el selector nativo: sudo apt install gir1.2-adw-1"
 fi
 
 # 10. Check PATH
