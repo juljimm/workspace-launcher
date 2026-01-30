@@ -123,7 +123,42 @@ echo "Creating symlink..."
 mkdir -p "$BIN_DIR"
 ln -sf "$CONFIG_DIR/workspace.py" "$BIN_DIR/workspace"
 
-# 9. Check PATH
+# 9. Install GNOME desktop integration
+echo "Installing GNOME desktop integration..."
+cp "$SCRIPT_DIR/workspace-launcher.sh" "$CONFIG_DIR/workspace-launcher.sh"
+chmod +x "$CONFIG_DIR/workspace-launcher.sh"
+
+# Install icon following freedesktop.org spec
+ICON_NAME="workspace-launcher"
+if [[ -f "$SCRIPT_DIR/workspace_launcher.svg" ]]; then
+    echo "Installing icon..."
+    mkdir -p "$HOME/.local/share/icons/hicolor/scalable/apps"
+    cp "$SCRIPT_DIR/workspace_launcher.svg" "$HOME/.local/share/icons/hicolor/scalable/apps/${ICON_NAME}.svg"
+    # Update icon cache
+    gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+else
+    ICON_NAME="utilities-terminal"
+fi
+
+mkdir -p "$HOME/.local/share/applications"
+cat > "$HOME/.local/share/applications/workspace-launcher.desktop" << DESKTOP
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Workspace Launcher
+Comment=Open predefined window layouts
+Exec=$CONFIG_DIR/workspace-launcher.sh
+Icon=$ICON_NAME
+Terminal=false
+Categories=Utility;System;
+DESKTOP
+
+# Check zenity
+if ! command -v zenity >/dev/null; then
+    echo "Nota: Instala zenity para selector GUI: sudo apt install zenity"
+fi
+
+# 10. Check PATH
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
     echo "NOTE: Add ~/bin to your PATH if you haven't:"
@@ -139,5 +174,7 @@ echo ""
 echo "Usage: workspace <template-name>"
 echo "       workspace --monitors    # List monitors"
 echo "       workspace --list        # List templates"
+echo ""
+echo "GNOME: Search 'Workspace Launcher' in Activities"
 echo ""
 echo "Templates in: $CONFIG_DIR/templates/"

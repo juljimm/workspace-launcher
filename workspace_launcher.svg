@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Row 1 -->
+  <rect x="4" y="4" width="28" height="28" rx="4" fill="#5B8BD4"/>
+  <rect x="36" y="4" width="28" height="28" rx="4" fill="#4A9ED9"/>
+  <rect x="68" y="4" width="28" height="28" rx="4" fill="#7B6CB5"/>
+  <rect x="100" y="4" width="24" height="28" rx="4" fill="#9B7BBF"/>
+
+  <!-- Row 2 -->
+  <rect x="4" y="36" width="28" height="28" rx="4" fill="#4AAFDD"/>
+  <rect x="36" y="36" width="28" height="28" rx="4" fill="#3DBEE0"/>
+  <rect x="68" y="36" width="28" height="28" rx="4" fill="#8B7DC0"/>
+  <rect x="100" y="36" width="24" height="28" rx="4" fill="#A88BC8"/>
+
+  <!-- Row 3 -->
+  <rect x="4" y="68" width="28" height="28" rx="4" fill="#7B5BA5"/>
+  <rect x="36" y="68" width="28" height="28" rx="4" fill="#6A7BB8"/>
+  <rect x="68" y="68" width="28" height="28" rx="4" fill="#8B7AAD"/>
+  <rect x="100" y="68" width="24" height="28" rx="4" fill="#9A89B5"/>
+
+  <!-- Row 4 -->
+  <rect x="4" y="100" width="28" height="24" rx="4" fill="#6B4A95"/>
+  <rect x="36" y="100" width="28" height="24" rx="4" fill="#7A5AA0"/>
+  <rect x="68" y="100" width="28" height="24" rx="4" fill="#8969A8"/>
+  <rect x="100" y="100" width="24" height="24" rx="4" fill="#9878B0"/>
+
+  <!-- Resize arrow -->
+  <g fill="none" stroke="#2D2D2D" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="44" y1="84" x2="84" y2="44"/>
+    <polyline points="60,44 84,44 84,68"/>
+  </g>
+</svg>
